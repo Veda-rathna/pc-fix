@@ -1,0 +1,105 @@
+# api/app.py
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import sys
+import os
+
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models.data_processor import PCFixDataProcessor
+
+app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
+
+# Initialize the data processor
+data_processor = PCFixDataProcessor()
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Simple health check endpoint"""
+    return jsonify({"status": "ok", "message": "PC Fix API is running"}), 200
+
+@app.route('/troubleshoot', methods=['POST'])
+def troubleshoot():
+    """Main endpoint for troubleshooting PC issues"""
+    data = request.json
+    
+    if not data or 'query' not in data:
+        return jsonify({"error": "Missing query parameter"}), 400
+    
+    query = data['query']
+    num_results = data.get('num_results', 3)  # Default to 3 results
+    
+    try:
+        # Search for similar issues
+        results = data_processor.search_similar_issues(query, top_n=num_results)
+        
+        # Format the response
+        response = {
+            "query": query,
+            "results": []
+        }
+        
+        for result in results:
+            # Get top 3 solutions per result
+            top_solutions = result.get('solutions', [])[:3]
+            
+            response["results"].append({
+                "issue_title": result['title'],
+                "category": result['category'],
+                "relevance_score": float(result['similarity']),
+                "solutions": [
+                    {
+                        "content": solution['content'],
+                        "confidence": float(solution['confidence'])
+                    } for solution in top_solutions
+                ]
+            })
+        
+        return jsonify(response), 200
+    
+    except Exception as e:
+        print(f"Error processing request: {str(e)}")
+        return jsonify({"error": "Failed to process your request", "details": str(e)}), 500
+
+@app.route('/categories', methods=['GET'])
+def get_categories():
+    """Get all issue categories"""
+    return jsonify(list(data_processor.categories.keys())), 200
+
+@app.route('/stats', methods=['GET'])
+def get_stats():
+    """Get basic stats about the database"""
+    import sqlite3
+    
+    conn = sqlite3.connect(data_processor.db_path)
+    cursor = conn.cursor()
+    
+    # Get post counts
+    cursor.execute("SELECT COUNT(*) FROM posts")
+    post_count = cursor.fetchone()[0]
+    
+    # Get solution counts
+    cursor.execute("SELECT COUNT(*) FROM solutions")
+    solution_count = cursor.fetchone()[0]
+    
+    # Get category distribution
+    cursor.execute("""
+    SELECT category, COUNT(*) as count 
+    FROM posts 
+    GROUP BY category
+    ORDER BY count DESC
+    """)
+    categories = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    conn.close()
+    
+    return jsonify({
+        "total_posts": post_count,
+        "total_solutions": solution_count,
+        "categories": categories
+    }), 200
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)
