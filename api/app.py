@@ -7,13 +7,14 @@ import os
 # Add the project root to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.data_processor import PCFixDataProcessor
+from models.pc_fix_model import PCFixModel
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Initialize the data processor
-data_processor = PCFixDataProcessor()
+# Initialize the model
+model = PCFixModel()
+model.train()  # This will load cached model if available or train a new one
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -22,7 +23,7 @@ def health_check():
 
 @app.route('/troubleshoot', methods=['POST'])
 def troubleshoot():
-    """Main endpoint for troubleshooting PC issues"""
+    """Main endpoint for troubleshooting PC issues using the ML model"""
     data = request.json
     
     if not data or 'query' not in data:
@@ -32,12 +33,16 @@ def troubleshoot():
     num_results = data.get('num_results', 3)  # Default to 3 results
     
     try:
-        # Search for similar issues
-        results = data_processor.search_similar_issues(query, top_n=num_results)
+        # Get category prediction
+        category = model.predict_category(query)
+        
+        # Search for similar issues using the ML model
+        results = model.search_similar_issues(query, top_n=num_results)
         
         # Format the response
         response = {
             "query": query,
+            "predicted_category": category,
             "results": []
         }
         
@@ -66,14 +71,15 @@ def troubleshoot():
 @app.route('/categories', methods=['GET'])
 def get_categories():
     """Get all issue categories"""
-    return jsonify(list(data_processor.categories.keys())), 200
+    categories = ["hardware", "software", "networking", "peripheral", "other"]
+    return jsonify(categories), 200
 
 @app.route('/stats', methods=['GET'])
 def get_stats():
-    """Get basic stats about the database"""
+    """Get basic stats about the database and model"""
     import sqlite3
     
-    conn = sqlite3.connect(data_processor.db_path)
+    conn = sqlite3.connect(model.db_path)
     cursor = conn.cursor()
     
     # Get post counts
@@ -95,11 +101,40 @@ def get_stats():
     
     conn.close()
     
+    # Add model info
+    model_info = {
+        "model_type": "sentence-transformer",
+        "embedding_size": 384 if model.issue_embeddings is not None else 0,
+        "issues_indexed": len(model.issue_data) if model.issue_data is not None else 0,
+    }
+    
     return jsonify({
         "total_posts": post_count,
         "total_solutions": solution_count,
-        "categories": categories
+        "categories": categories,
+        "model_info": model_info
     }), 200
+
+@app.route('/feedback', methods=['POST'])
+def submit_feedback():
+    """Submit user feedback for model improvement"""
+    data = request.json
+    
+    if not data or 'query' not in data or 'selected_solution_id' not in data:
+        return jsonify({"error": "Missing required feedback parameters"}), 400
+    
+    # Save feedback for future fine-tuning
+    feedback = {
+        "query": data['query'],
+        "selected_solution_id": data['selected_solution_id'],
+        "helpful": data.get('helpful', True),
+        "timestamp": data.get('timestamp')
+    }
+    
+    # Submit to model for fine-tuning
+    model.fine_tune([feedback])
+    
+    return jsonify({"status": "Feedback recorded successfully"}), 200
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
